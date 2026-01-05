@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { getPrice } from "../services/geService";
+import { getPrice } from "../services/geService.ts";
 
 const router = Router();
 

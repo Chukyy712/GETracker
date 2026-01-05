@@ -4,6 +4,7 @@
   "description": "Site de monitorização de mercado do OSRS",
   "main": "backend/index.ts",
   "scripts": {
+    "dev": "nodemon backend/index.ts",
     "start": "ts-node backend/index.ts"
   },
   "repository": {
