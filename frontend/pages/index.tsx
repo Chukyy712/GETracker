@@ -4,13 +4,16 @@ export default function Home() {
   const [item, setItem] = useState("");
   const [price, setPrice] = useState<number | null>(null);
   const [error, setError] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
 
   const fetchPrice = async () => {
     setError("");
     setPrice(null);
+    setIsLoading(true);
 
     if (!item) {
       setError("Escreve o nome de um item!");
+      setIsLoading(false);
       return;
     }
 
@@ -26,6 +29,8 @@ export default function Home() {
       setPrice(data.price);
     } catch (err) {
       setError("Não foi possível conectar ao servidor.");
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -42,6 +47,12 @@ export default function Home() {
       <button onClick={fetchPrice} style={{ padding: "8px 16px" }}>
         Buscar preço
       </button>
+
+      {isLoading && (
+        <p style={{ marginTop: "20px", color: "blue" }}>
+          A carregar...
+        </p>
+      )}
 
       {price !== null && (
         <p style={{ marginTop: "20px", fontWeight: "bold" }}>
