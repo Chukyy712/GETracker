@@ -1,27 +1,60 @@
-interface Item {
-  id: number;
-  name: string;
-}
+import { PrismaClient } from "@prisma/client";
+import fetch from "node-fetch";
+
+const prisma = new PrismaClient();
+
+// CONFIGURAÇÃO: Intervalo de cache (1 minuto para realtime)
+const CACHE_INTERVAL_MS = 60 * 1000; // 1 minuto
+
+// Cache para armazenar mapping e preços
+let lastPriceUpdate = 0;
+let ongoingPriceFetch: Promise<void> | null = null;
+let cachedItemIds: Set<number> | null = null;
+let cachedItemsByName: Map<string, { id: number; name: string }> | null = null;
+let autoUpdateInterval: NodeJS.Timeout | null = null;
 
 interface PriceData {
   high: number;
   low: number;
 }
 
-// Cache para armazenar mapping e preços
-let itemMapping: Item[] = [];
-// CORREÇÃO: Record com chave number, não string!
-let latestPrices: Record<number, PriceData> = {};
-let lastFetch = 0;
+// OTIMIZAÇÃO 1: Cache dos IDs válidos (evita query repetida)
+async function getExistingItemIds(): Promise<Set<number>> {
+  if (!cachedItemIds) {
+    const items = await prisma.item.findMany({ select: { id: true } });
+    cachedItemIds = new Set(items.map(item => item.id));
+    console.log(`📦 Cache de IDs criado: ${cachedItemIds.size} items válidos`);
+  }
+  return cachedItemIds;
+}
 
-// CORREÇÃO DO BUG: Promise compartilhada em vez de flag booleana
-let ongoingFetch: Promise<void> | null = null;
+// OTIMIZAÇÃO PARA ESCALA: Cache de items por nome (100 users simultâneos)
+async function getItemByName(itemName: string): Promise<{ id: number; name: string } | null> {
+  // Inicializa cache se ainda não existe
+  if (!cachedItemsByName) {
+    console.log("🔄 Carregando cache de items em memória...");
+    const items = await prisma.item.findMany({ 
+      select: { id: true, name: true } 
+    });
+    
+    cachedItemsByName = new Map();
+    items.forEach(item => {
+      // Guarda com nome normalizado (lowercase) como chave
+      cachedItemsByName!.set(item.name.toLowerCase(), item);
+    });
+    
+    console.log(`✅ Cache de items criado: ${cachedItemsByName.size} items em memória`);
+  }
+  
+  // Busca no cache (instantâneo!)
+  return cachedItemsByName.get(itemName.toLowerCase()) || null;
+}
 
 // Timeout nas requisições
 async function fetchWithTimeout(url: string, timeoutMs = 10000) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  
+
   try {
     const response = await fetch(url, { signal: controller.signal });
     clearTimeout(timeout);
@@ -38,135 +71,233 @@ async function fetchWithRetry(url: string, retries = 3): Promise<Response> {
     try {
       const response = await fetchWithTimeout(url);
       if (response.ok) return response;
-      
-      console.warn(`Tentativa ${i + 1} falhou para ${url}, status: ${response.status}`);
+
+      console.warn(
+        `Tentativa ${i + 1} falhou para ${url}, status: ${response.status}`
+      );
     } catch (error) {
       console.warn(`Tentativa ${i + 1} falhou para ${url}:`, error);
-      
-      // Se não for a última tentativa, espera antes de tentar de novo
+
       if (i < retries - 1) {
-        await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1))); // 1s, 2s, 3s
+        await new Promise((resolve) => setTimeout(resolve, 1000 * (i + 1)));
       }
     }
   }
-  
+
   throw new Error(`Falhou após ${retries} tentativas`);
 }
 
-async function updateData() {
+async function updateLatestPrices(force: boolean = false) {
   const now = Date.now();
   
-  // Cache de 5 minutos
-  if (now - lastFetch < 5 * 60 * 1000) {
+  // Verifica se precisa atualizar (a menos que seja forçado)
+  if (!force && now - lastPriceUpdate < CACHE_INTERVAL_MS) {
     return;
   }
-  
-  // CORREÇÃO REAL: Se já existe um fetch em andamento, ESPERA por ele
-  if (ongoingFetch) {
-    console.log("⏳ Fetch já em andamento, aguardando conclusão...");
-    await ongoingFetch; // Espera terminar!
-    return;
+
+  // Se já está atualizando, retorna a Promise existente (não bloqueia!)
+  if (ongoingPriceFetch) {
+    console.log("⏳ Update já em andamento...");
+    return ongoingPriceFetch;
   }
-  
-  // PASSO 1: Cria a Promise e guarda a referência
+
   const fetchPromise = (async () => {
     try {
-      console.log("🔄 Buscando dados atualizados da OSRS Wiki API...");
+      console.log("🔄 Buscando preços atualizados da OSRS Wiki API...");
+      const pricesRes = await fetchWithRetry(
+        "https://prices.runescape.wiki/api/v1/osrs/latest"
+      );
+
+      const pricesData = (await pricesRes.json() as { data: Record<number, PriceData> }).data;
+
+      const pricesToCreate = Object.entries(pricesData)
+        .map(([itemId, price]) => {
+          if (price.high > 0 && price.low > 0) {
+            return {
+              itemId: parseInt(itemId),
+              high: price.high,
+              low: price.low,
+            };
+          }
+          return null;
+        })
+        .filter((p): p is NonNullable<typeof p> => p !== null);
+
+      // OTIMIZAÇÃO 2: Usa Set em vez de Array.includes (100x mais rápido!)
+      const existingItemIds = await getExistingItemIds();
       
-      const [mappingRes, pricesRes] = await Promise.all([
-        fetchWithRetry("https://prices.runescape.wiki/api/v1/osrs/mapping"),
-        fetchWithRetry("https://prices.runescape.wiki/api/v1/osrs/latest"),
-      ]);
-      
-      // Valida se ambas as respostas são JSON
-      const mappingContentType = mappingRes.headers.get("content-type");
-      const pricesContentType = pricesRes.headers.get("content-type");
-      
-      if (!mappingContentType?.includes("application/json") || 
-          !pricesContentType?.includes("application/json")) {
-        throw new Error("API não retornou JSON válido");
+      const validPricesToCreate = pricesToCreate.filter(
+        price => existingItemIds.has(price.itemId)
+      );
+
+      if (validPricesToCreate.length > 0) {
+        // SQLite: usa create individual com Promise.all
+        await Promise.all(
+          validPricesToCreate.map(price =>
+            prisma.price.create({
+              data: price,
+            }).catch(() => {}) // Ignora duplicados silenciosamente
+          )
+        );
       }
-      
-      const newMapping = await mappingRes.json();
-      const pricesData = await pricesRes.json();
-      
-      // Valida estrutura dos dados
-      if (!Array.isArray(newMapping) || !pricesData.data) {
-        throw new Error("Estrutura de dados inválida da API");
-      }
-      
-      // Só atualiza se os dados forem válidos
-      itemMapping = newMapping as Item[];
-      latestPrices = pricesData.data;
-      lastFetch = now;
-      
-      console.log(`✅ Dados atualizados! ${itemMapping.length} items carregados.`);
-      
+
+      lastPriceUpdate = now;
+      const ignoredCount = pricesToCreate.length - validPricesToCreate.length;
+      console.log(
+        `✅ Preços atualizados! ${validPricesToCreate.length} registros inseridos` +
+        (ignoredCount > 0 ? ` (${ignoredCount} ignorados)` : '')
+      );
+
     } catch (error) {
-      console.error("❌ Erro ao atualizar dados:", error);
-      
-      // Se nunca conseguiu carregar dados, tenta de novo em 30s
-      if (itemMapping.length === 0) {
-        console.error("⚠️ Cache vazio! Sistema indisponível. Tentando novamente em 30s...");
-        lastFetch = now - (4.5 * 60 * 1000); // Tenta de novo em 30s
-      } else {
-        console.log("📦 Usando cache antigo com", itemMapping.length, "items");
+      console.error("❌ Erro ao atualizar preços:", error);
+      if (lastPriceUpdate === 0) {
+        lastPriceUpdate = now - (CACHE_INTERVAL_MS - 30000);
       }
     } finally {
-      // PASSO 3: Limpa a Promise quando terminar (no finally garante que sempre executa)
-      ongoingFetch = null;
+      ongoingPriceFetch = null;
     }
   })();
+
+  ongoingPriceFetch = fetchPromise;
+  return fetchPromise;
+}
+
+// AUTO-UPDATE: Atualiza automaticamente a cada 1 minuto (para gráficos)
+export function startAutoUpdate() {
+  if (autoUpdateInterval) {
+    console.log("⚠️ Auto-update já está ativo");
+    return;
+  }
+
+  console.log(`🤖 Auto-update ativado! Atualizando a cada ${CACHE_INTERVAL_MS / 1000}s`);
   
-  // PASSO 2: Guarda a referência ANTES de começar a executar
-  ongoingFetch = fetchPromise;
-  
-  // PASSO 4: Espera a Promise terminar
-  await fetchPromise;
+  // Primeira atualização imediata
+  updateLatestPrices(true).catch(err => 
+    console.error("Erro na primeira atualização:", err)
+  );
+
+  // Atualiza a cada intervalo
+  autoUpdateInterval = setInterval(() => {
+    updateLatestPrices(true).catch(err =>
+      console.error("Erro no auto-update:", err)
+    );
+  }, CACHE_INTERVAL_MS);
+}
+
+export function stopAutoUpdate() {
+  if (autoUpdateInterval) {
+    clearInterval(autoUpdateInterval);
+    autoUpdateInterval = null;
+    console.log("🛑 Auto-update desativado");
+  }
 }
 
 export async function getPrice(itemName: string): Promise<number | null> {
-  await updateData();
-  
-  // Se não tem dados, retorna null com erro claro
-  if (itemMapping.length === 0) {
-    console.error("❌ Sistema sem dados disponíveis");
-    return null;
-  }
-  
-  const item = itemMapping.find(
-    (i) => i.name.toLowerCase() === itemName.toLowerCase()
-  );
-  
+  // OTIMIZAÇÃO: Busca no cache em memória (0ms) em vez de query SQLite
+  const item = await getItemByName(itemName);
+
   if (!item) {
     console.log(`⚠️ Item não encontrado: ${itemName}`);
     return null;
   }
-  
-  const priceData = latestPrices[item.id];
-  
-  if (!priceData) {
-    console.log(`⚠️ Preço não disponível para: ${itemName} (ID: ${item.id})`);
-    return null;
+
+  // UX MELHORADA: Busca último preço disponível (qualquer idade)
+  const latestPrice = await prisma.price.findFirst({
+    where: { itemId: item.id },
+    orderBy: { timestamp: "desc" },
+  });
+
+  // Se não existe NENHUM preço, aguarda atualização
+  if (!latestPrice) {
+    console.log(`⏱️ Nenhum preço disponível para "${itemName}". Buscando...`);
+    await updateLatestPrices(true);
+    
+    const newPrice = await prisma.price.findFirst({
+      where: { itemId: item.id },
+      orderBy: { timestamp: "desc" },
+    });
+    
+    if (!newPrice) {
+      console.log(`⚠️ Preço não disponível para: ${itemName} (ID: ${item.id})`);
+      return null;
+    }
+    
+    return Math.round((newPrice.high + newPrice.low) / 2);
   }
-  
-  // Valida que os preços fazem sentido
-  if (priceData.high <= 0 || priceData.low <= 0) {
-    console.warn(`⚠️ Preços inválidos para ${itemName}: high=${priceData.high}, low=${priceData.low}`);
-    return null;
-  }
-  
-  return Math.round((priceData.high + priceData.low) / 2);
+
+  // SEMPRE retorna o último preço imediatamente (sem bloquear!)
+  return Math.round((latestPrice.high + latestPrice.low) / 2);
 }
 
-// Exporta função pra ver status do sistema
-export function getSystemStatus() {
+// NOVA FUNÇÃO: Busca histórico de preços para gráficos
+export async function getPriceHistory(
+  itemName: string, 
+  hoursBack: number = 24
+): Promise<Array<{ timestamp: Date; high: number; low: number; average: number }> | null> {
+  const item = await getItemByName(itemName);
+  
+  if (!item) {
+    return null;
+  }
+
+  const startTime = new Date(Date.now() - hoursBack * 60 * 60 * 1000);
+  
+  const prices = await prisma.price.findMany({
+    where: {
+      itemId: item.id,
+      timestamp: {
+        gte: startTime,
+      },
+    },
+    orderBy: {
+      timestamp: "asc",
+    },
+  });
+
+  return prices.map(p => ({
+    timestamp: p.timestamp,
+    high: p.high,
+    low: p.low,
+    average: Math.round((p.high + p.low) / 2),
+  }));
+}
+
+export async function getSystemStatus() {
+  const totalItems = await prisma.item.count();
+  const totalPrices = await prisma.price.count();
+  const latestPriceRecord = await prisma.price.findFirst({
+    orderBy: { timestamp: 'desc' }
+  });
+
+  const lastUpdate = latestPriceRecord?.timestamp;
+  const cacheAge = lastUpdate ? Math.floor((Date.now() - lastUpdate.getTime()) / 1000) : -1;
+
   return {
-    itemsLoaded: itemMapping.length,
-    pricesLoaded: Object.keys(latestPrices).length,
-    lastUpdate: lastFetch > 0 ? new Date(lastFetch).toISOString() : "Nunca",
-    cacheAge: lastFetch > 0 ? Math.floor((Date.now() - lastFetch) / 1000) : -1,
-    isHealthy: itemMapping.length > 0,
-    isFetching: ongoingFetch !== null
+    itemsLoaded: totalItems,
+    pricesLoaded: totalPrices,
+    lastUpdate: lastUpdate ? lastUpdate.toISOString() : "Nunca",
+    cacheAge,
+    cacheAgeSeconds: cacheAge,
+    cacheIntervalSeconds: CACHE_INTERVAL_MS / 1000,
+    isHealthy: totalItems > 0 && totalPrices > 0,
+    isFetching: ongoingPriceFetch !== null,
+    autoUpdateActive: autoUpdateInterval !== null,
+    cachedItemIdsSize: cachedItemIds?.size ?? 0,
+    cachedItemsSize: cachedItemsByName?.size ?? 0
   };
 }
+
+// OTIMIZAÇÃO 3: Cleanup ao desligar o servidor
+process.on('SIGINT', async () => {
+  console.log('\n🔌 Desligando servidor...');
+  stopAutoUpdate();
+  await prisma.$disconnect();
+  console.log('✅ Desconectado. Até logo!');
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  stopAutoUpdate();
+  await prisma.$disconnect();
+  process.exit(0);
+});

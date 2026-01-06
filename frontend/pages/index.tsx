@@ -5,10 +5,10 @@ export default function Home() {
   const [price, setPrice] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [lastSearchedItem, setLastSearchedItem] = useState("");
 
   const fetchPrice = async () => {
     setError("");
-    setPrice(null);
     setIsLoading(true);
 
     if (!item) {
@@ -19,18 +19,29 @@ export default function Home() {
 
     try {
       const res = await fetch(`http://localhost:3001/api/price/${encodeURIComponent(item)}`);
+      
       if (!res.ok) {
         const data = await res.json();
         setError(data.error || "Erro desconhecido");
+        setPrice(null); // Só limpa se der erro
         return;
       }
 
       const data = await res.json();
       setPrice(data.price);
+      setLastSearchedItem(item);
     } catch (err) {
       setError("Não foi possível conectar ao servidor.");
+      setPrice(null); // Só limpa se der erro
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  // Permite buscar com Enter
+  const handleKeyPress = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      fetchPrice();
     }
   };
 
@@ -42,22 +53,33 @@ export default function Home() {
         placeholder="Nome do item..."
         value={item}
         onChange={(e) => setItem(e.target.value)}
+        onKeyPress={handleKeyPress}
         style={{ width: "100%", padding: "8px", marginBottom: "10px" }}
+        disabled={isLoading}
       />
-      <button onClick={fetchPrice} style={{ padding: "8px 16px" }}>
-        Buscar preço
+      <button 
+        onClick={fetchPrice} 
+        disabled={isLoading}
+        style={{ 
+          padding: "8px 16px",
+          opacity: isLoading ? 0.6 : 1,
+          cursor: isLoading ? 'wait' : 'pointer'
+        }}
+      >
+        {isLoading ? 'A buscar...' : 'Buscar preço'}
       </button>
 
-      {isLoading && (
-        <p style={{ marginTop: "20px", color: "blue" }}>
-          A carregar...
-        </p>
-      )}
-
       {price !== null && (
-        <p style={{ marginTop: "20px", fontWeight: "bold" }}>
-          Preço de {item}: {price.toLocaleString()} gp
-        </p>
+        <div style={{ marginTop: "20px" }}>
+          <p style={{ fontWeight: "bold", fontSize: "18px" }}>
+            Preço de {lastSearchedItem}: {price.toLocaleString()} gp
+          </p>
+          {isLoading && (
+            <p style={{ color: "#666", fontSize: "12px", fontStyle: "italic" }}>
+              🔄 A atualizar...
+            </p>
+          )}
+        </div>
       )}
 
       {error && (
@@ -68,4 +90,3 @@ export default function Home() {
     </div>
   );
 }
-
