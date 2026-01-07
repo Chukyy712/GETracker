@@ -302,6 +302,51 @@ export async function getPriceHistory(
   }));
 }
 
+// NOVA FUNÇÃO: Pesquisa itens por prefixo (para autocomplete)
+export async function searchItems(
+  query: string,
+  limit: number = 10
+): Promise<Array<{ id: number; name: string }>> {
+  // Garante que o cache está carregado
+  if (!cachedItemsByName || isItemCacheExpired()) {
+    console.log("🔄 Carregando cache de items para pesquisa...");
+    const items = await prisma.item.findMany({
+      select: { id: true, name: true }
+    });
+
+    cachedItemsByName = new Map();
+    items.forEach(item => {
+      cachedItemsByName!.set(item.name.toLowerCase(), item);
+    });
+
+    lastItemCacheUpdate = Date.now();
+    console.log(`✅ Cache de items criado: ${cachedItemsByName.size} items em memória`);
+  }
+
+  const queryLower = query.toLowerCase();
+  const results: Array<{ id: number; name: string }> = [];
+
+  // Pesquisa itens que começam com a query
+  for (const [nameLower, item] of cachedItemsByName) {
+    if (nameLower.startsWith(queryLower)) {
+      results.push(item);
+      if (results.length >= limit) break;
+    }
+  }
+
+  // Se não encontrou suficientes, pesquisa itens que contêm a query
+  if (results.length < limit) {
+    for (const [nameLower, item] of cachedItemsByName) {
+      if (!nameLower.startsWith(queryLower) && nameLower.includes(queryLower)) {
+        results.push(item);
+        if (results.length >= limit) break;
+      }
+    }
+  }
+
+  return results;
+}
+
 export async function getSystemStatus() {
   const totalItems = await prisma.item.count();
   const totalPrices = await prisma.price.count();

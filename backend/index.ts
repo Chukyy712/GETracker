@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import priceRouter from "./routes/price.ts";
 import statusRouter from "./routes/status.ts";
+import searchRouter from "./routes/search.ts";
 import { startAutoUpdate, cleanup } from "./services/geService.ts";
 import { generalLimiter } from "./middleware/rateLimiter.ts";
 
@@ -14,6 +15,7 @@ app.use(generalLimiter); // Rate limit global: 100 req/min por IP
 
 app.use("/api/price", priceRouter);
 app.use("/api/status", statusRouter);
+app.use("/api/search", searchRouter);
 
 const PORT = 3001;
 

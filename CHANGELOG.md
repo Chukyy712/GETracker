@@ -1,5 +1,75 @@
 # Changelog
 
+## [1.3.0] - 2026-01-07
+
+### Novas Funcionalidades
+
+#### API de Busca com Autocomplete
+- Novo endpoint `GET /api/search?q=<query>&limit=<n>`
+- Pesquisa itens por prefixo (prioridade) e depois por substring
+- Limite configurável de resultados (máximo 20)
+- Rate limiting aplicado
+- **Ficheiros:** `backend/routes/search.ts`, `backend/services/geService.ts:305-347`
+
+### Redesign do Frontend
+
+#### Novo Sistema de Layout
+- Componente `Layout` com Header e Footer reutilizáveis
+- Navegação consistente entre páginas
+- Design responsivo com tema dark profissional
+- **Ficheiros:** `frontend/components/Layout.tsx`, `frontend/components/Header.tsx`, `frontend/components/Footer.tsx`
+
+#### Componente de Busca com Autocomplete
+- `SearchAutocomplete` com sugestões em tempo real
+- Debounce de 300ms para otimização de requests
+- Navegação por teclado (↑↓ e Enter)
+- Destaque do texto pesquisado nos resultados
+- **Ficheiro:** `frontend/components/SearchAutocomplete.tsx`
+
+#### Página Principal Redesenhada
+- Nova hero section com gradiente
+- Card de resultado estilizado
+- Integração com autocomplete
+- Visual moderno e profissional
+- **Ficheiro:** `frontend/pages/index.tsx`
+
+#### Novas Páginas (Estrutura)
+- `/favorites` - Página de favoritos (preparada para implementação)
+- `/history` - Página de histórico de preços (preparada para implementação)
+- **Ficheiros:** `frontend/pages/favorites.tsx`, `frontend/pages/history.tsx`
+
+#### Sistema de Estilos
+- CSS Variables para tema consistente
+- Classes utilitárias `.btn`, `.btn-primary`, `.btn-secondary`
+- Variáveis de cor, espaçamento e border-radius
+- **Ficheiro:** `frontend/styles/globals.css`
+
+### Estrutura de Ficheiros Adicionados
+
+```
+backend/
+└── routes/
+    └── search.ts              # Endpoint de busca
+
+frontend/
+├── components/
+│   ├── Layout.tsx             # Layout principal
+│   ├── Header.tsx             # Navegação
+│   ├── Footer.tsx             # Rodapé
+│   └── SearchAutocomplete.tsx # Componente de autocomplete
+└── pages/
+    ├── favorites.tsx          # Página de favoritos
+    └── history.tsx            # Página de histórico
+```
+
+### Notas Técnicas
+
+- Autocomplete usa cache em memória (mesmo do geService)
+- Debounce no frontend reduz carga no servidor
+- Layout wrapper em `_app.tsx` para consistência
+
+---
+
 ## [1.2.0] - 2026-01-07
 
 ### Correções de Bugs Críticos
