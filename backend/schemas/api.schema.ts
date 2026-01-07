@@ -13,8 +13,7 @@ export const WikiPriceResponseSchema = z.object({
   data: z.record(z.string(), PriceDataSchema),
 });
 
-// Tipos inferidos automaticamente
-export type PriceData = z.infer<typeof PriceDataSchema>;
+// Tipo inferido automaticamente
 export type WikiPriceResponse = z.infer<typeof WikiPriceResponseSchema>;
 
 // Função helper para validar resposta da API

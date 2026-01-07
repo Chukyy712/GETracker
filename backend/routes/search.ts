@@ -11,8 +11,9 @@ router.get("/", generalLimiter, async (req, res) => {
     return res.json({ items: [] });
   }
 
-  // Limita a 10 resultados
-  const limit = Math.min(parseInt(req.query.limit as string) || 10, 20);
+  // Limita a 10 resultados (garante número válido)
+  const parsedLimit = Number(req.query.limit);
+  const limit = Math.min(Number.isNaN(parsedLimit) ? 10 : parsedLimit, 20);
 
   try {
     const items = await searchItems(query, limit);

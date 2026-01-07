@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef } from "react";
+import { apiUrl, config } from "@/lib/config";
+import { SpinnerIcon } from "./Icons";
 
 interface Item {
   id: number;
@@ -49,9 +51,7 @@ export default function SearchAutocomplete({
     const timeoutId = setTimeout(async () => {
       setIsLoading(true);
       try {
-        const res = await fetch(
-          `http://localhost:3001/api/search?q=${encodeURIComponent(value)}&limit=8`
-        );
+        const res = await fetch(apiUrl(config.endpoints.search(value, 8)));
         if (res.ok) {
           const data = await res.json();
           setSuggestions(data.items);
@@ -145,28 +145,7 @@ export default function SearchAutocomplete({
             transform: "translateY(-50%)",
           }}
         >
-          <svg
-            width="18"
-            height="18"
-            viewBox="0 0 24 24"
-            fill="none"
-            style={{ animation: "spin 1s linear infinite" }}
-          >
-            <circle
-              cx="12"
-              cy="12"
-              r="10"
-              stroke="var(--text-muted)"
-              strokeWidth="3"
-              opacity="0.3"
-            />
-            <path
-              d="M12 2a10 10 0 0 1 10 10"
-              stroke="var(--accent)"
-              strokeWidth="3"
-              strokeLinecap="round"
-            />
-          </svg>
+          <SpinnerIcon size={18} />
         </div>
       )}
 
@@ -212,17 +191,6 @@ export default function SearchAutocomplete({
         </ul>
       )}
 
-      {/* CSS para animação de spin */}
-      <style jsx global>{`
-        @keyframes spin {
-          from {
-            transform: rotate(0deg);
-          }
-          to {
-            transform: rotate(360deg);
-          }
-        }
-      `}</style>
     </div>
   );
 }

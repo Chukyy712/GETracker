@@ -5,8 +5,13 @@ import { statusLimiter } from "../middleware/rateLimiter.ts";
 const router = Router();
 
 router.get("/", statusLimiter, async (req, res) => {
-  const status = await getSystemStatus();
-  res.json(status);
+  try {
+    const status = await getSystemStatus();
+    res.json(status);
+  } catch (error) {
+    console.error("Erro ao obter status:", error);
+    res.status(500).json({ error: "Erro interno do servidor" });
+  }
 });
 
 export default router;

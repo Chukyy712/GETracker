@@ -46,7 +46,7 @@ npm install
 cd frontend && npm install && cd ..
 
 # Gerar cliente Prisma
-npx prisma generate --schema=prisma/prisma/schema.prisma
+npx prisma generate
 
 # Popular base de dados (primeira vez)
 npm run db:populate

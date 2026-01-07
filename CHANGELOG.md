@@ -1,5 +1,63 @@
 # Changelog
 
+## [1.3.1] - 2026-01-07
+
+### Correções Críticas
+
+- **DB removido do git** - Base de dados (55MB) removida do tracking
+- **Try-catch em rotas** - Adicionado error handling em `price.ts` e `status.ts`
+- **NaN handling** - Corrigido parseInt em `search.ts` para valores inválidos
+- **tsconfig.json** - Removidas opções contraditórias (`declaration` + `noEmit`)
+
+### Refatoração Backend
+
+Nova estrutura modular para escalabilidade:
+
+```
+backend/services/
+├── database.ts      # Prisma singleton (17 linhas)
+├── cacheManager.ts  # Gestão de cache encapsulada (119 linhas)
+├── wikiApi.ts       # Comunicação com API externa (80 linhas)
+└── geService.ts     # Orquestração simplificada (229 linhas, antes 379)
+```
+
+### Refatoração Frontend
+
+#### Configuração Centralizada
+- API URL movido para `frontend/lib/config.ts`
+- Configurável via `NEXT_PUBLIC_API_URL` para deploy
+- **Ficheiro:** `frontend/lib/config.ts`
+
+#### Componentes Reutilizáveis
+- `EmptyState` - Estado vazio genérico para qualquer página
+- `Icons` - Biblioteca de ícones centralizada (Star, Chart, Clipboard, Spinner, Search)
+- **Ficheiros:** `frontend/components/EmptyState.tsx`, `frontend/components/Icons.tsx`
+
+### Limpeza de Código
+
+- Removido `Home.module.css` (não usado)
+- Removido tipo `PriceData` (não usado)
+- Removidos SVGs duplicados em 3+ ficheiros
+- Páginas `favorites.tsx` e `history.tsx` simplificadas (65→36 linhas)
+
+### Ficheiros Adicionados
+
+```
+backend/services/
+├── database.ts
+├── cacheManager.ts
+└── wikiApi.ts
+
+frontend/
+├── lib/
+│   └── config.ts
+└── components/
+    ├── EmptyState.tsx
+    └── Icons.tsx
+```
+
+---
+
 ## [1.3.0] - 2026-01-07
 
 ### Novas Funcionalidades

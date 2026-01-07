@@ -20,13 +20,19 @@ router.get("/:item/history", historyLimiter, async (req, res) => {
   }
 
   const { item: itemName, hours } = validation.data;
-  const history = await getPriceHistory(itemName, hours);
 
-  if (history === null) {
-    return res.status(404).json({ error: "Item não encontrado" });
+  try {
+    const history = await getPriceHistory(itemName, hours);
+
+    if (history === null) {
+      return res.status(404).json({ error: "Item não encontrado" });
+    }
+
+    res.json({ item: itemName, history });
+  } catch (error) {
+    console.error("Erro ao obter histórico:", error);
+    res.status(500).json({ error: "Erro interno do servidor" });
   }
-
-  res.json({ item: itemName, history });
 });
 
 // Rota genérica por último (captura qualquer /:item que não seja /history)
