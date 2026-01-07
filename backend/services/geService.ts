@@ -1,28 +1,39 @@
 import { PrismaClient } from "@prisma/client";
-import fetch from "node-fetch";
+import fetch, { Response } from "node-fetch";
+import { validateWikiPriceResponse } from "../schemas/api.schema.ts";
 
 const prisma = new PrismaClient();
 
 // CONFIGURAÇÃO: Intervalo de cache (1 minuto para realtime)
 const CACHE_INTERVAL_MS = 60 * 1000; // 1 minuto
+const ITEM_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hora para cache de items
 
 // Cache para armazenar mapping e preços
 let lastPriceUpdate = 0;
+let lastItemCacheUpdate = 0;
 let ongoingPriceFetch: Promise<void> | null = null;
 let cachedItemIds: Set<number> | null = null;
 let cachedItemsByName: Map<string, { id: number; name: string }> | null = null;
 let autoUpdateInterval: NodeJS.Timeout | null = null;
 
-interface PriceData {
-  high: number;
-  low: number;
+// Verifica se o cache de items expirou
+function isItemCacheExpired(): boolean {
+  return Date.now() - lastItemCacheUpdate > ITEM_CACHE_TTL_MS;
+}
+
+// Invalida caches de items (chamado quando TTL expira)
+function invalidateItemCaches() {
+  cachedItemIds = null;
+  cachedItemsByName = null;
+  console.log("🔄 Cache de items expirado, será recarregado no próximo pedido");
 }
 
 // OTIMIZAÇÃO 1: Cache dos IDs válidos (evita query repetida)
 async function getExistingItemIds(): Promise<Set<number>> {
-  if (!cachedItemIds) {
+  if (!cachedItemIds || isItemCacheExpired()) {
     const items = await prisma.item.findMany({ select: { id: true } });
     cachedItemIds = new Set(items.map(item => item.id));
+    lastItemCacheUpdate = Date.now();
     console.log(`📦 Cache de IDs criado: ${cachedItemIds.size} items válidos`);
   }
   return cachedItemIds;
@@ -30,22 +41,23 @@ async function getExistingItemIds(): Promise<Set<number>> {
 
 // OTIMIZAÇÃO PARA ESCALA: Cache de items por nome (100 users simultâneos)
 async function getItemByName(itemName: string): Promise<{ id: number; name: string } | null> {
-  // Inicializa cache se ainda não existe
-  if (!cachedItemsByName) {
+  // Invalida e recarrega se cache expirou
+  if (!cachedItemsByName || isItemCacheExpired()) {
     console.log("🔄 Carregando cache de items em memória...");
-    const items = await prisma.item.findMany({ 
-      select: { id: true, name: true } 
+    const items = await prisma.item.findMany({
+      select: { id: true, name: true }
     });
-    
+
     cachedItemsByName = new Map();
     items.forEach(item => {
       // Guarda com nome normalizado (lowercase) como chave
       cachedItemsByName!.set(item.name.toLowerCase(), item);
     });
-    
+
+    lastItemCacheUpdate = Date.now();
     console.log(`✅ Cache de items criado: ${cachedItemsByName.size} items em memória`);
   }
-  
+
   // Busca no cache (instantâneo!)
   return cachedItemsByName.get(itemName.toLowerCase()) || null;
 }
@@ -108,11 +120,20 @@ async function updateLatestPrices(force: boolean = false) {
         "https://prices.runescape.wiki/api/v1/osrs/latest"
       );
 
-      const pricesData = (await pricesRes.json() as { data: Record<number, PriceData> }).data;
+      const jsonData = await pricesRes.json();
+
+      // Validação da resposta da API com Zod
+      const validation = validateWikiPriceResponse(jsonData);
+      if (!validation.success) {
+        throw new Error(validation.error);
+      }
+
+      const pricesData = validation.data.data;
 
       const pricesToCreate = Object.entries(pricesData)
         .map(([itemId, price]) => {
-          if (price.high > 0 && price.low > 0) {
+          // Filtra preços inválidos (null ou <= 0)
+          if (price.high && price.low && price.high > 0 && price.low > 0) {
             return {
               itemId: parseInt(itemId),
               high: price.high,
@@ -132,13 +153,32 @@ async function updateLatestPrices(force: boolean = false) {
 
       if (validPricesToCreate.length > 0) {
         // SQLite: usa create individual com Promise.all
+        let insertedCount = 0;
+        let duplicateCount = 0;
+        let errorCount = 0;
+
         await Promise.all(
           validPricesToCreate.map(price =>
             prisma.price.create({
               data: price,
-            }).catch(() => {}) // Ignora duplicados silenciosamente
+            })
+            .then(() => { insertedCount++; })
+            .catch((err: unknown) => {
+              // P2002 = Unique constraint violation (duplicado)
+              const isPrismaError = err !== null && typeof err === 'object' && 'code' in err;
+              if (isPrismaError && err.code === 'P2002') {
+                duplicateCount++;
+              } else {
+                errorCount++;
+                console.error(`❌ Erro ao inserir preço para item ${price.itemId}:`, err);
+              }
+            })
           )
         );
+
+        if (errorCount > 0) {
+          console.warn(`⚠️ ${errorCount} erros durante inserção de preços`);
+        }
       }
 
       lastPriceUpdate = now;
@@ -287,17 +327,8 @@ export async function getSystemStatus() {
   };
 }
 
-// OTIMIZAÇÃO 3: Cleanup ao desligar o servidor
-process.on('SIGINT', async () => {
-  console.log('\n🔌 Desligando servidor...');
+// Função de cleanup para encerramento gracioso
+export async function cleanup() {
   stopAutoUpdate();
   await prisma.$disconnect();
-  console.log('✅ Desconectado. Até logo!');
-  process.exit(0);
-});
-
-process.on('SIGTERM', async () => {
-  stopAutoUpdate();
-  await prisma.$disconnect();
-  process.exit(0);
-});
+}
